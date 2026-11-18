@@ -1,0 +1,120 @@
+# Demo of "run the full test suite only before merging".
+#
+# - Every PR push runs Lint only (cheap).
+# - The full test matrix runs when:
+#     1. the PR has auto-merge enabled ("Enable auto-merge" button), or
+#     2. someone adds the one-shot `run-tests` label (removed again after the run), or
+#     3. a push lands on main (post-merge check).
+# - `Test Group Summary` is the required check. It FAILS when the tests did not
+#   run, so a PR can only merge after a full, green test run on its latest commit.
+name: CI
+
+on:
+  pull_request:
+    # auto_merge_enabled: clicking "Enable auto-merge" starts the full tests.
+    # labeled: adding `run-tests` starts the full tests once.
+    types: [opened, synchronize, reopened, ready_for_review, labeled, auto_merge_enabled]
+  push:
+    branches: [main]
+
+# A newer run on the same PR cancels the older one.
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - name: Ruff
+        run: pipx run ruff check .
+
+  decide:
+    name: Decide whether to run tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      run_tests: ${{ steps.decide.outputs.run_tests }}
+    steps:
+      - id: decide
+        env:
+          EVENT: ${{ github.event_name }}
+          ACTION: ${{ github.event.action }}
+          # The PR as it was when this event fired (a re-run reuses this snapshot).
+          AUTO_MERGE_ON: ${{ github.event.pull_request.auto_merge != null }}
+          HAS_RUN_TESTS_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'run-tests') }}
+        run: |
+          if [[ "$EVENT" != "pull_request" ]]; then
+            reason="push to main: always run the full suite"; run=true
+          elif [[ "$AUTO_MERGE_ON" == "true" ]]; then
+            reason="auto-merge is enabled: test before merging"; run=true
+          elif [[ "$HAS_RUN_TESTS_LABEL" == "true" ]]; then
+            reason="the run-tests label is on the PR"; run=true
+          else
+            reason="ordinary PR push: lint only"; run=false
+          fi
+          echo "event=$EVENT action=$ACTION auto_merge=$AUTO_MERGE_ON run-tests label=$HAS_RUN_TESTS_LABEL"
+          echo "run_tests=$run ($reason)"
+          echo "run_tests=$run" >> "$GITHUB_OUTPUT"
+          echo "### Run tests: \`$run\` — $reason" >> "$GITHUB_STEP_SUMMARY"
+
+  test:
+    needs: decide
+    if: needs.decide.outputs.run_tests == 'true'
+    name: Test Group ${{ matrix.group }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [1, 2]
+    steps:
+      - uses: actions/checkout@v6
+      - name: Run test group ${{ matrix.group }}
+        run: python3 -m unittest -v tests.test_group${{ matrix.group }}
+
+  test-summary:
+    # The required status check. It must never be skipped: GitHub counts a
+    # skipped required check as passing, which would let an untested PR merge.
+    needs: [decide, test]
+    if: always() && github.event_name == 'pull_request'
+    name: Test Group Summary
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - env:
+          RUN_TESTS: ${{ needs.decide.outputs.run_tests }}
+          TEST_RESULT: ${{ needs.test.result }}
+        run: |
+          if [[ "$RUN_TESTS" != "true" ]]; then
+            echo "::error::The full test suite has not run on this commit. Click \"Enable auto-merge\" to test and merge, or add the run-tests label to test once."
+            exit 1
+          fi
+          if [[ "$TEST_RESULT" != "success" ]]; then
+            echo "::error::The test matrix did not pass: $TEST_RESULT"
+            exit 1
+          fi
+          echo "All test groups passed."
+
+  remove-run-tests-label:
+    # `run-tests` is one-shot: take it off once the run is over, pass or fail.
+    # A label removed with GITHUB_TOKEN does not trigger another workflow run.
+    needs: test
+    if: always() && github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'run-tests')
+    name: Remove run-tests label
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+      issues: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: gh pr edit "$PR" --remove-label run-tests --repo "$GITHUB_REPOSITORY"
