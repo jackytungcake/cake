@@ -23,3 +23,7 @@ def power(base: int, exponent: int) -> int:
 
 def modulo(a: int, b: int) -> int:
     return a % b
+
+
+def negate(a: int) -> int:
+    return -a
