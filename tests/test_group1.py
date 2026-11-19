@@ -2,7 +2,7 @@
 
 import unittest
 
-from app.calculator import add, subtract
+from app.calculator import add, divide, subtract
 
 
 class TestAdd(unittest.TestCase):
@@ -13,6 +13,11 @@ class TestAdd(unittest.TestCase):
 class TestSubtract(unittest.TestCase):
     def test_subtract(self) -> None:
         self.assertEqual(subtract(5, 3), 2)
+
+
+class TestDivide(unittest.TestCase):
+    def test_divide(self) -> None:
+        self.assertEqual(divide(6, 3), 2)
 
 
 if __name__ == "__main__":
