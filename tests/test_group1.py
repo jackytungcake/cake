@@ -2,7 +2,7 @@
 
 import unittest
 
-from app.calculator import add, divide, power, subtract
+from app.calculator import add, divide, modulo, power, subtract
 
 
 class TestAdd(unittest.TestCase):
@@ -23,6 +23,11 @@ class TestDivide(unittest.TestCase):
 class TestPower(unittest.TestCase):
     def test_power(self) -> None:
         self.assertEqual(power(2, 10), 1024)
+
+
+class TestModulo(unittest.TestCase):
+    def test_modulo(self) -> None:
+        self.assertEqual(modulo(7, 3), 1)
 
 
 if __name__ == "__main__":
