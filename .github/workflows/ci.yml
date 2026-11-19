@@ -5,8 +5,12 @@
 #     1. the PR has auto-merge enabled ("Enable auto-merge" button), or
 #     2. someone adds the one-shot `run-tests` label (removed again after the run), or
 #     3. a push lands on main (post-merge check).
-# - `Test Group Summary` is the required check. It FAILS when the tests did not
-#   run, so a PR can only merge after a full, green test run on its latest commit.
+# - The merge lock is a commit status named STATUS_CONTEXT (the required check):
+#     pending  -> the full tests have not run on this commit (or are running)
+#     success  -> the full tests passed
+#     failure  -> the full tests failed
+#   A pending status blocks merging just like a failed check, but it does not
+#   fail the workflow run, so an ordinary push sends no "CI failed" email.
 name: CI
 
 on:
@@ -25,6 +29,10 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  # Name of the required check in the main ruleset; keep the two in sync.
+  STATUS_CONTEXT: "Full tests (runs on Enable auto-merge)"
+
 jobs:
   lint:
     name: Lint
@@ -39,6 +47,8 @@ jobs:
     name: Decide whether to run tests
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    permissions:
+      statuses: write
     outputs:
       run_tests: ${{ steps.decide.outputs.run_tests }}
     steps:
@@ -64,6 +74,25 @@ jobs:
           echo "run_tests=$run" >> "$GITHUB_OUTPUT"
           echo "### Run tests: \`$run\` — $reason" >> "$GITHUB_STEP_SUMMARY"
 
+      # Statuses go on the PR's head commit: that is the commit the PR page and
+      # the ruleset look at (github.sha is the temporary merge commit instead).
+      - name: Mark the merge lock as pending
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+          RUN_TESTS: ${{ steps.decide.outputs.run_tests }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [[ "$RUN_TESTS" == "true" ]]; then
+            description="Running the full tests..."
+          else
+            description="Waiting: click Enable auto-merge, or add the run-tests label, to run the full tests"
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/statuses/$SHA" \
+            -f state=pending -f context="$STATUS_CONTEXT" \
+            -f description="$description" -f target_url="$RUN_URL" > /dev/null
+
   test:
     needs: decide
     if: needs.decide.outputs.run_tests == 'true'
@@ -79,28 +108,35 @@ jobs:
       - name: Run test group ${{ matrix.group }}
         run: python3 -m unittest -v tests.test_group${{ matrix.group }}
 
-  test-summary:
-    # The required status check. It must never be skipped: GitHub counts a
-    # skipped required check as passing, which would let an untested PR merge.
+  report-status:
+    # Turns the pending status into success or failure once the tests are done.
+    # `!cancelled()` rather than `always()`: a run cancelled by a newer one must
+    # not overwrite the newer run's status on the same commit.
     needs: [decide, test]
-    if: always() && github.event_name == 'pull_request'
-    name: Test Group Summary
+    if: >-
+      !cancelled() && github.event_name == 'pull_request'
+      && needs.decide.outputs.run_tests == 'true'
+    name: Report test status
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    permissions:
+      statuses: write
     steps:
       - env:
-          RUN_TESTS: ${{ needs.decide.outputs.run_tests }}
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.pull_request.head.sha }}
           TEST_RESULT: ${{ needs.test.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          if [[ "$RUN_TESTS" != "true" ]]; then
-            echo "::error::The full test suite has not run on this commit. Click \"Enable auto-merge\" to test and merge, or add the run-tests label to test once."
-            exit 1
+          if [[ "$TEST_RESULT" == "success" ]]; then
+            state=success; description="All test groups passed"
+          else
+            state=failure; description="The full tests did not pass: $TEST_RESULT"
           fi
-          if [[ "$TEST_RESULT" != "success" ]]; then
-            echo "::error::The test matrix did not pass: $TEST_RESULT"
-            exit 1
-          fi
-          echo "All test groups passed."
+          gh api "repos/$GITHUB_REPOSITORY/statuses/$SHA" \
+            -f state="$state" -f context="$STATUS_CONTEXT" \
+            -f description="$description" -f target_url="$RUN_URL" > /dev/null
+          echo "$STATUS_CONTEXT -> $state ($description)"
 
   remove-run-tests-label:
     # `run-tests` is one-shot: take it off once the run is over, pass or fail.

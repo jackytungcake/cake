@@ -25,7 +25,7 @@
         "strict_required_status_checks_policy": false,
         "required_status_checks": [
           { "context": "Lint", "integration_id": 15368 },
-          { "context": "Test Group Summary", "integration_id": 15368 }
+          { "context": "Full tests (runs on Enable auto-merge)" }
         ]
       }
     }
