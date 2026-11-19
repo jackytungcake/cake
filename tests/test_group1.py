@@ -2,7 +2,7 @@
 
 import unittest
 
-from app.calculator import add, negate, divide, modulo, power, subtract
+from app.calculator import add, divide, modulo, negate, power, subtract
 
 
 class TestAdd(unittest.TestCase):
